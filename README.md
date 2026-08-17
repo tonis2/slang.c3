@@ -13,8 +13,19 @@ walk the reflection into a descriptor set layout.
 The libraries are **not vendored and not in git**: libslang alone is 27 MB, and
 committing it would put that in this repository's history permanently — every
 SDK bump adding another copy that no later commit can take out. The script
-symlinks the two this binding needs into `lib/<target>/` instead. Without it the
-build fails at the linker with `library not found for -lslang`.
+symlinks the two this binding needs into `lib/<target>/` instead.
+
+**Forgetting it does not always fail at the linker.** On a clean machine it does,
+with `library not found for -lslang`. On a machine that has a Slang installed
+somewhere the linker searches by default — `/usr/local/lib`, say, from an
+installer package — `-lslang` finds *that* one instead, links happily, and the
+build dies at startup in dyld:
+
+    Library not loaded: @rpath/libslang-compiler.0.2026.8.dylib
+
+naming a version you never asked for. That is measured, on the machine this was
+written on. If you see a Slang version you do not recognise in a load error, this
+is why: run the script, and the staged SDK takes precedence over the system one.
 
 Only the release archive is needed — no build and nothing installed system wide.
 Unpack it anywhere and point `SLANG_SDK` at it:

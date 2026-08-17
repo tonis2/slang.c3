@@ -11,8 +11,12 @@
   // another copy that no later commit can remove. `native/stage-slang.sh`
   // symlinks the two needed libraries out of an installed SDK into lib/<target>/
   // instead, finding it through $SLANG_SDK or slangc on PATH. Run it once per
-  // checkout; without it the build fails at the linker with "library not found
-  // for -lslang".
+  // checkout.
+  //
+  // Forgetting it fails at the linker with "library not found for -lslang" only
+  // on a machine with no other Slang. Where one is installed somewhere the
+  // linker searches by default, -lslang finds that one, links, and the build
+  // dies at startup in dyld naming a version nobody asked for. See the README.
   "linklib-dir": "lib",
   //
   // **A consuming project on macOS wants `"macos-min-version": "15.0"` in its
