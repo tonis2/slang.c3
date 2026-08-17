@@ -1,0 +1,14 @@
+# Symlinked out of an installed SDK by native/stage-slang.sh. 35 MB of somebody
+# else's build, pointing at a path that is different on every machine — what is
+# in git is the script, not the libraries.
+lib/*/
+
+# Standalone build output
+build/
+
+# Object and debug files
+*.o
+*.obj
+*.d
+*.dSYM/
+*.pdb

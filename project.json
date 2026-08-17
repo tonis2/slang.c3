@@ -1,0 +1,45 @@
+{
+  // Standalone build, for developing and testing the binding on its own.
+  // Consumers get `manifest.json` instead, which links the same library — the
+  // two must be kept in step.
+  //
+  // They differ in two things, both structural rather than deliberate:
+  //
+  //   - `manifest.json` can key `linked-libraries` and `link-args` by platform
+  //     and does, for four targets. A `project.json` cannot — `targets` here
+  //     means build products, not platforms — so what is below is the host this
+  //     is developed on. A Linux checkout changes two strings; the manifest
+  //     that consumers read already covers it.
+  //   - The rpath differs because the binary does. A test binary here sits in
+  //     ./build and reaches the libraries as ../lib/<target>; a consumer's
+  //     binary reaches them through ../lib/slang.c3l/lib/<target>.
+  //
+  // `linklib-dir` is a manifest property and is not valid here, so the search
+  // path is spelled out.
+  //
+  // `./native/stage-slang.sh` has to have been run, here as in any consumer —
+  // lib/<target>/ is symlinks to an installed SDK and is not in git.
+  "langrev": "1",
+  "warnings": ["no-unused"],
+  "authors": [],
+  "version": "0.1.0",
+  "dependency-search-paths": [],
+  "dependencies": [],
+  "sources": ["src/**"],
+  "test-sources": ["test/**"],
+  "linked-libraries": ["slang"],
+  "linker-search-paths": ["lib/macos-aarch64"],
+  "link-args": [
+    "-Wl,-rpath,@executable_path/../lib/macos-aarch64",
+    "-Wl,-rpath,@executable_path"
+  ],
+  // The SDK's dylibs are built for something newer than the macOS 11.0 that c3c
+  // targets by default, and ld says so on every link unless it is told.
+  "macos-min-version": "15.0",
+  "targets": {
+    "slang": {
+      "type": "static-lib"
+    }
+  },
+  "output": "./build"
+}

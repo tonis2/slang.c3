@@ -1,0 +1,61 @@
+{
+  "provides": "slang",
+  "sources": ["src/**"],
+  // No C sources and no shim. Slang's `sp*` family passes nothing by value that
+  // is not a scalar or a pointer, so there is no ABI bet of the kind
+  // quickjs.c3l's shim exists to avoid — `extern fn` declarations reach it
+  // directly. See the header of src/slang.c3.
+  //
+  // **The dylibs are not in git.** libslang is 27 MB, and vendoring it would put
+  // that in this repository's history permanently — every SDK bump adding
+  // another copy that no later commit can remove. `native/stage-slang.sh`
+  // symlinks the two needed libraries out of an installed SDK into lib/<target>/
+  // instead, finding it through $SLANG_SDK or slangc on PATH. Run it once per
+  // checkout; without it the build fails at the linker with "library not found
+  // for -lslang".
+  "linklib-dir": "lib",
+  //
+  // **A consuming project on macOS wants `"macos-min-version": "15.0"` in its
+  // own project.json.** It cannot be set here: `macos-min-version` is a project
+  // property and c3c rejects it in a manifest by name. Without it c3c links for
+  // macOS 11.0, the SDK's dylibs are built for something newer, and ld says so
+  // on every single build — which buries anything real.
+  "targets": {
+    "macos-aarch64": {
+      "linked-libraries": ["slang"],
+      // libslang records its install name as @rpath/libslang-compiler.<ver>.dylib,
+      // so the linker needs somewhere to look at *runtime* as well as at link
+      // time. Both paths are relative — nothing here names a machine.
+      //
+      //   ../lib/slang.c3l/lib/macos-aarch64  the checkout, from an exe in build/
+      //   .                                   the dylibs copied beside a shipped binary
+      //
+      // A deployment that wants neither can set DYLD_LIBRARY_PATH.
+      "link-args": [
+        "-Wl,-rpath,@executable_path/../lib/slang.c3l/lib/macos-aarch64",
+        "-Wl,-rpath,@executable_path"
+      ]
+    },
+    "macos-x64": {
+      "linked-libraries": ["slang"],
+      "link-args": [
+        "-Wl,-rpath,@executable_path/../lib/slang.c3l/lib/macos-x64",
+        "-Wl,-rpath,@executable_path"
+      ]
+    },
+    "linux-x64": {
+      "linked-libraries": ["slang"],
+      "link-args": [
+        "-Wl,-rpath,$ORIGIN/../lib/slang.c3l/lib/linux-x64",
+        "-Wl,-rpath,$ORIGIN"
+      ]
+    },
+    "linux-aarch64": {
+      "linked-libraries": ["slang"],
+      "link-args": [
+        "-Wl,-rpath,$ORIGIN/../lib/slang.c3l/lib/linux-aarch64",
+        "-Wl,-rpath,$ORIGIN"
+      ]
+    }
+  }
+}
