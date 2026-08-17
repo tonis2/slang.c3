@@ -3,6 +3,11 @@
 # in git is the script, not the libraries.
 lib/*/
 
+# An SDK the script fetched because it found none installed: the release
+# archive, checksum-verified, pruned to about 36 MB. Deleting it costs one
+# re-download and nothing else.
+.slang-sdk/
+
 # Standalone build output
 build/
 
