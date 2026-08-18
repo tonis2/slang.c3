@@ -50,15 +50,15 @@
     "linux-x64": {
       "linked-libraries": ["slang"],
       "link-args": [
-        "-Wl,-rpath,$ORIGIN/../lib/slang.c3l/lib/linux-x64",
-        "-Wl,-rpath,$ORIGIN"
+        "-Wl,-rpath,\\$ORIGIN/../lib/slang.c3l/lib/linux-x64",
+        "-Wl,-rpath,\\$ORIGIN"
       ]
     },
     "linux-aarch64": {
       "linked-libraries": ["slang"],
       "link-args": [
-        "-Wl,-rpath,$ORIGIN/../lib/slang.c3l/lib/linux-aarch64",
-        "-Wl,-rpath,$ORIGIN"
+        "-Wl,-rpath,\\$ORIGIN/../lib/slang.c3l/lib/linux-aarch64",
+        "-Wl,-rpath,\\$ORIGIN"
       ]
     }
   }
