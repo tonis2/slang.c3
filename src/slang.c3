@@ -400,6 +400,11 @@ struct Field
 	String name;
 	uint offset;
 	uint size;
+	// True for a field of the struct a *pointer* in the push block points at,
+	// rather than of the push block itself — see `Reflection.push_block`'s
+	// `indirect_field`. `offset` is then within that struct and says nothing
+	// about the push block.
+	bool indirect;
 }
 
 <*
@@ -451,9 +456,10 @@ fn void Reflection.descriptors(self, List{Descriptor}* out)
  The program's push-constant block, if it has one: its size and its fields.
 
  @param [&inout] fields : `Appended to, not cleared. Empty if there is no push block.`
+ @param indirect_field : `The name of one pointer field to follow. Its pointee's fields are appended after it with indirect set, at offsets in the pointee's own space. Empty follows nothing, which is what every caller that has no such field wants.`
  @return `The block's size in bytes, or zero if there is none.`
 *>
-fn uint Reflection.push_block(self, List{Field}* fields)
+fn uint Reflection.push_block(self, List{Field}* fields, String indirect_field = "")
 {
 	uint count = spReflection_GetParameterCount(self);
 	for (uint i = 0; i < count; i++)
@@ -498,11 +504,36 @@ fn uint Reflection.push_block(self, List{Field}* fields)
 			Variable variable = spReflectionVariableLayout_GetVariable(field);
 			ZString name = variable == null ? null : spReflectionVariable_GetName(variable);
 			TypeLayout field_layout = spReflectionVariableLayout_GetTypeLayout(field);
+			String field_name = name == null ? "" : name.str_view();
 			fields.push({
-				.name = name == null ? "" : name.str_view(),
+				.name = field_name,
 				.offset = (uint)spReflectionVariableLayout_GetOffset(field, CATEGORY_UNIFORM),
 				.size = (uint)spReflectionTypeLayout_GetSize(field_layout, CATEGORY_UNIFORM),
 			});
+
+			// The one pointer the caller asked to be followed. Its own entry stays
+			// above — a caller has to write an address into it — and the pointee's
+			// fields follow it, marked, with offsets in the pointee's own space.
+			if (indirect_field.len == 0 || field_name != indirect_field) continue;
+			if (field_layout == null) continue;
+			if (spReflectionTypeLayout_getKind(field_layout) != KIND_POINTER) continue;
+			TypeLayout pointee = spReflectionTypeLayout_GetElementTypeLayout(field_layout);
+			if (pointee == null) continue;
+
+			uint inner_count = spReflectionTypeLayout_GetFieldCount(pointee);
+			for (uint g = 0; g < inner_count; g++)
+			{
+				VarLayout inner = spReflectionTypeLayout_GetFieldByIndex(pointee, g);
+				Variable inner_variable = spReflectionVariableLayout_GetVariable(inner);
+				ZString inner_name = inner_variable == null ? null : spReflectionVariable_GetName(inner_variable);
+				TypeLayout inner_layout = spReflectionVariableLayout_GetTypeLayout(inner);
+				fields.push({
+					.name = inner_name == null ? "" : inner_name.str_view(),
+					.offset = (uint)spReflectionVariableLayout_GetOffset(inner, CATEGORY_UNIFORM),
+					.size = (uint)spReflectionTypeLayout_GetSize(inner_layout, CATEGORY_UNIFORM),
+					.indirect = true,
+				});
+			}
 		}
 		return (uint)size;
 	}
