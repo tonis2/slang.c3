@@ -153,6 +153,11 @@ const uint OPTIMIZE_MAXIMAL = 3;
 // The C surface, declared exactly as it is exported
 // ============================================================================
 
+// The compiler's own identity. No arguments and no session — it is a string
+// baked into the binary at its build, which is what makes it usable as a cache
+// key before anything has been compiled.
+extern fn ZString spGetBuildTagString();
+
 // Session and request lifetime.
 extern fn Session spCreateSession(ZString unused);
 extern fn void spDestroySession(Session session);
@@ -218,6 +223,26 @@ extern fn ZString spReflectionVariable_GetName(Variable variable);
 // ============================================================================
 
 faultdef SESSION_FAILED, REQUEST_FAILED, NO_CODE;
+
+<*
+ Which Slang built this — the release tag, as the compiler reports it.
+
+ A build of Slang stamps its own tag in, so this is `v2026.12.2` on a release
+ and something like `unknown` or a commit description on a build made from a
+ checkout with no tag. Either way it is *stable for a given binary and different
+ across an upgrade*, which is the only property a cache key needs from it.
+
+ Free to ask: no session, no request, no allocation, and the pointer is static
+ storage inside libslang. That is the difference between this and hashing the
+ dylib, which costs 35 MB of reading to learn the same thing.
+
+ @return `A view of libslang's own static storage. Valid for the life of the process; never freed.`
+*>
+fn String build_tag()
+{
+	ZString tag = spGetBuildTagString();
+	return tag == null ? "" : tag.str_view();
+}
 
 <*
  Start a Slang session. One per process is the intended shape.
