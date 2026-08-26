@@ -20,13 +20,14 @@
 # both outside git and the manifest names only `slang` — so a different machine
 # re-runs this and gets a working build without editing anything.
 #
-# **Two libraries, not one, and not five.** libslang-compiler is the compiler
-# itself. libslang-glslang is spirv-opt, which Slang loads as a downstream tool
-# on the SPIR-V path — without it every compile fails with "failed to load
-# downstream compiler 'spirv-opt'", which reads like a missing binary rather
-# than a missing dylib. libslang-llvm is 102 MB and is only needed for CPU and
-# host codegen targets, so it is deliberately not kept; that was a guess once
-# and is now measured.
+# **Two libraries on Unix, three on Windows, and not five.** libslang-compiler
+# is the compiler itself. libslang-glslang is spirv-opt, which Slang loads as a
+# downstream tool on the SPIR-V path — without it every compile fails with
+# "failed to load downstream compiler 'spirv-opt'", which reads like a missing
+# binary rather than a missing dylib. libslang-llvm is 102 MB and is only needed
+# for CPU and host codegen targets, so it is deliberately not kept; that was a
+# guess once and is now measured.
+#
 
 set -euo pipefail
 
@@ -85,6 +86,10 @@ asset_for_target() {
         macos-x64)      echo "slang-$SLANG_VERSION-macos-x86_64.tar.gz" ;;
         linux-x64)      echo "slang-$SLANG_VERSION-linux-x86_64-glibc-2.28.tar.gz" ;;
         linux-aarch64)  echo "slang-$SLANG_VERSION-linux-aarch64.tar.gz" ;;
+        # No glibc variants and no small build to choose between: the x86_64
+        # archive is the only one, and it is 69 MB because it carries
+        # slang-llvm. The prune below takes it back to about 50 MB staged.
+        windows-x64)    echo "slang-$SLANG_VERSION-windows-x86_64.tar.gz" ;;
     esac
 }
 
@@ -97,12 +102,19 @@ case "${1:-}" in
 esac
 
 case "$(uname -s)/$(uname -m)" in
-    Darwin/arm64)  target="macos-aarch64"; ext="dylib" ;;
-    Darwin/x86_64) target="macos-x64";     ext="dylib" ;;
-    Linux/x86_64)  target="linux-x64";     ext="so"    ;;
-    Linux/aarch64) target="linux-aarch64"; ext="so"    ;;
+    Darwin/arm64)   target="macos-aarch64"; ext="dylib" ;;
+    Darwin/x86_64)  target="macos-x64";     ext="dylib" ;;
+    Linux/x86_64)   target="linux-x64";     ext="so"    ;;
+    Linux/aarch64)  target="linux-aarch64"; ext="so"    ;;
+    # git-bash, MSYS2 and Cygwin each spell it differently and all three are how
+    # a Windows checkout runs a shell script.
+    MINGW*/*|MSYS*/*|CYGWIN*/*) target="windows-x64"; ext="dll" ;;
     *) echo "stage-slang: no target mapping for $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
+
+# One flag rather than a string compare at four call sites.
+windows=0
+[[ "$ext" == "dll" ]] && windows=1
 
 # Where a fetched SDK is kept. **Shared between checkouts on purpose:** the
 # archive is 20-54 MB depending on platform, and three checkouts on one machine
@@ -266,12 +278,28 @@ EOF
     # leaves about 36 MB. Pruned here rather than extracted selectively because
     # tar's wildcard flags differ between BSD and GNU, and a flag that is
     # silently ignored is worse than a delete that is not.
-    find "$tmp/lib" -mindepth 1 -maxdepth 1 \
-        ! -name "libslang.$ext" \
-        ! -name "libslang-compiler*" \
-        ! -name "libslang-glslang*" \
-        -exec rm -rf {} + 2>/dev/null || true
-    find "$tmp/bin" -mindepth 1 -maxdepth 1 ! -name slangc -exec rm -rf {} + 2>/dev/null || true
+    if (( windows )); then
+        # bin/ is where the CODE is on Windows, so the Unix rule — keep only
+        # slangc in bin/ — would delete the compiler. lib/ here holds import
+        # libraries, which are small and are what the linker reads.
+        find "$tmp/bin" -mindepth 1 -maxdepth 1 \
+            ! -name "slang.dll" \
+            ! -name "slang-compiler.dll" \
+            ! -name "slang-glslang.dll" \
+            ! -name "slangc.exe" \
+            -exec rm -rf {} + 2>/dev/null || true
+        find "$tmp/lib" -mindepth 1 -maxdepth 1 \
+            ! -name "slang.lib" \
+            ! -name "slang-compiler.lib" \
+            -exec rm -rf {} + 2>/dev/null || true
+    else
+        find "$tmp/lib" -mindepth 1 -maxdepth 1 \
+            ! -name "libslang.$ext" \
+            ! -name "libslang-compiler*" \
+            ! -name "libslang-glslang*" \
+            -exec rm -rf {} + 2>/dev/null || true
+        find "$tmp/bin" -mindepth 1 -maxdepth 1 ! -name slangc -exec rm -rf {} + 2>/dev/null || true
+    fi
     rm -rf "$tmp/share" "$tmp/include"
 
     rm -rf "$dest"
@@ -327,15 +355,38 @@ mkdir -p "$here/lib/$target"
 # `libslang-compiler*.so` matches only the unversioned symlink, so a Linux build
 # linked and then failed to load. Not caught for a milestone because nothing had
 # been built on Linux.
+# What to take, and from which directory of the SDK. On Unix everything the
+# build needs is in lib/; on Windows the linker's half is in lib/ and the
+# loader's half is in bin/, and both land in one staged directory because that
+# is what the manifest's linklib-dir points at and what a bundle ships.
+if (( windows )); then
+    sources=( "lib/slang.lib" "bin/slang.dll" "bin/slang-compiler.dll" "bin/slang-glslang.dll" )
+else
+    sources=( "lib/libslang-compiler*" "lib/libslang-glslang*" "lib/libslang.$ext" )
+fi
+
+# A staged entry is a symlink where the platform has them and a copy where it
+# does not. Windows symlinks need SeCreateSymbolicLinkPrivilege, which an
+# ordinary checkout does not have, and a silently-failed link is a build that
+# cannot find the compiler.
+stage_one() {
+    local found="$1" name
+    name="$(basename "$found")"
+    if (( windows )); then
+        cp -f "$found" "$here/lib/$target/$name"
+    else
+        ln -sfn "$found" "$here/lib/$target/$name"
+    fi
+    echo "  $name"
+}
+
 staged=0
-for pattern in "libslang-compiler*" "libslang-glslang*" "libslang.$ext"; do
+for pattern in "${sources[@]}"; do
     # Nullglob rather than a bare glob: an SDK laid out differently should say
     # which library is missing, not link a file literally named "libslang-*".
     shopt -s nullglob
-    for found in "$sdk/lib/"$pattern; do
-        name="$(basename "$found")"
-        ln -sfn "$found" "$here/lib/$target/$name"
-        echo "  $name"
+    for found in "$sdk/"$pattern; do
+        stage_one "$found"
         staged=$((staged + 1))
     done
     shopt -u nullglob
@@ -349,7 +400,11 @@ fi
 # The linker resolves -lslang through this name. Some SDK layouts ship it as a
 # symlink already, in which case the loop above copied the link and this is a
 # no-op; others name only the versioned file.
-if [[ ! -e "$here/lib/$target/libslang.$ext" ]]; then
+#
+# Windows needs none of it: -lslang reaches `slang.lib`, which the SDK ships
+# under exactly that name and the loop above already staged. There is no
+# versioned filename to alias and no `lib` prefix to add.
+if (( ! windows )) && [[ ! -e "$here/lib/$target/libslang.$ext" ]]; then
     shopt -s nullglob
     for found in "$here/lib/$target/"libslang-compiler*."$ext"; do
         ln -sfn "$(basename "$found")" "$here/lib/$target/libslang.$ext"

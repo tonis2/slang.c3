@@ -60,6 +60,29 @@
         "-Wl,-rpath,\\$ORIGIN/../lib/slang.c3l/lib/linux-aarch64",
         "-Wl,-rpath,\\$ORIGIN"
       ]
+    },
+    // **Windows resolves this differently, in three ways, and none of them is
+    // an rpath.**
+    //
+    // 1. `-lslang` reaches an IMPORT LIBRARY, `slang.lib`, not the DLL. Slang
+    //    ships it under `lib/` with no `lib` prefix — the Unix targets above
+    //    link `libslang.dylib`/`libslang.so` directly, and that name does not
+    //    exist here. `native/stage-slang.sh` stages `slang.lib` under this
+    //    same `linklib-dir`, so the manifest entry stays one word.
+    //
+    // 2. **There are no link-args**, and that is not an omission. Windows has
+    //    no rpath: the loader searches the directory of the .exe, then the
+    //    system directories, then PATH. Adding `-Wl,-rpath,...` here would be
+    //    passed to a linker that does not take it.
+    //
+    // 3. The consequence, which the Unix targets do not have: a freshly built
+    //    `build\three.exe` will NOT find `slang.dll`, because the DLLs are in
+    //    `lib/slang.c3l/lib/windows-x64/` and that is not one of the places the
+    //    loader looks. Either copy the two DLLs beside the exe or put that
+    //    directory on PATH. A shipped bundle has them beside the binary already,
+    //    which is why CI's smoke test runs from the bundle and not from build/.
+    "windows-x64": {
+      "linked-libraries": ["slang"]
     }
   }
 }
