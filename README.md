@@ -55,18 +55,22 @@ machine can actually link.
 | asset | |
 |---|---|
 | `libslang-macos-aarch64.a` | 42.8 MB |
-| `VERSION-macos-aarch64` | slang version, size, sha256, and how it was built |
+| `libslang-linux-x64.a` | 54.2 MB |
+| `VERSION-<target>` | slang version, size, sha256, and how it was built |
 | `SHA256SUMS` | one line per published asset — what `fetch-static.sh` verifies against |
 
 The tag is rolling, so it alone promises nothing; `SHA256SUMS` is the pin, and a
 mismatch fails the fetch by name rather than surfacing as an unresolved symbol in
 a consumer's link.
 
-> **Only `macos-aarch64` is published, and only it has been built and run.** The
-> Linux path should work as written but nobody has published an archive yet.
-> The Windows path in `build-slang.sh` — MSVC, `lib.exe` through a response
-> file — is written from the tools' documented behaviour and has never been
-> executed.
+> **`macos-aarch64` and `linux-x64` are published, and both have been built and
+> run.** The Windows path in `build-slang.sh` — MSVC, `lib.exe` through a
+> response file — is written from the tools' documented behaviour and has never
+> been executed.
+>
+> The Linux archive is larger than the macOS one (54.2 MB against 42.8 MB) for
+> no interesting reason: ELF archives carry more symbol-table overhead than
+> Mach-O, and `libtool` on macOS drops empty members that GNU `ar` keeps.
 
 Building one yourself, if your platform is not there yet:
 

@@ -176,10 +176,14 @@ for tool in cmake git; do
         echo "build-slang: $tool is required and not on PATH" >&2; exit 1; }
 done
 
+# **nproc first, and the fallbacks cannot fail.** `hw.ncpu` is a BSD/macOS
+# sysctl key. Linux ships a `sysctl` too, but it reads /proc/sys, so the same
+# call becomes "cannot stat /proc/sys/hw/ncpu" -- and under `set -e` a failing
+# command substitution aborts the script. Probing sysctl first therefore killed
+# every Linux run here, before the clone, with one stderr line and nothing else;
+# that is why no linux-x64 archive was ever published.
 if [[ -z "$jobs" ]]; then
-    if command -v sysctl >/dev/null 2>&1; then jobs="$(sysctl -n hw.ncpu)"
-    elif command -v nproc >/dev/null 2>&1; then jobs="$(nproc)"
-    else jobs=4; fi
+    jobs="$({ nproc || sysctl -n hw.ncpu; } 2>/dev/null || echo 4)"
 fi
 
 # **Windows needs MSVC, and needs it to be the compiler CMake picks.** Slang's
