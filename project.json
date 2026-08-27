@@ -3,22 +3,19 @@
   // Consumers get `manifest.json` instead, which links the same library — the
   // two must be kept in step.
   //
-  // They differ in two things, both structural rather than deliberate:
-  //
-  //   - `manifest.json` can key `linked-libraries` and `link-args` by platform
-  //     and does, for four targets. A `project.json` cannot — `targets` here
-  //     means build products, not platforms — so what is below is the host this
-  //     is developed on. A Linux checkout changes two strings; the manifest
-  //     that consumers read already covers it.
-  //   - The rpath differs because the binary does. A test binary here sits in
-  //     ./build and reaches the libraries as ../lib/<target>; a consumer's
-  //     binary reaches them through ../lib/slang.c3l/lib/<target>.
+  // They differ in one structural way: `manifest.json` can key
+  // `linked-libraries` and `link-args` by platform and does, for five targets.
+  // A `project.json` cannot — `targets` here means build products, not
+  // platforms — so what is below is the host this is developed on. A Linux
+  // checkout changes two strings; the manifest that consumers read already
+  // covers it.
   //
   // `linklib-dir` is a manifest property and is not valid here, so the search
-  // path is spelled out.
+  // path is spelled out. There are no rpaths on either side any more: Slang is
+  // a static archive, so nothing is looked up at runtime.
   //
-  // `./native/stage-slang.sh` has to have been run, here as in any consumer —
-  // lib/<target>/ is symlinks to an installed SDK and is not in git.
+  // `./native/fetch-static.sh` has to have been run, here as in any consumer —
+  // lib/<target>/libslang.a is ~43 MB and is not in git.
   "langrev": "1",
   "warnings": ["no-unused"],
   "authors": [],
@@ -29,13 +26,13 @@
   "test-sources": ["test/**"],
   "linked-libraries": ["slang"],
   "linker-search-paths": ["lib/macos-aarch64"],
-  "link-args": [
-    "-Wl,-rpath,@executable_path/../lib/macos-aarch64",
-    "-Wl,-rpath,@executable_path"
-  ],
-  // The SDK's dylibs are built for something newer than the macOS 11.0 that c3c
-  // targets by default, and ld says so on every link unless it is told.
-  "macos-min-version": "15.0",
+  // Slang is C++, and an archive does not record libc++ as its own dependency
+  // the way a dylib does. Without this every std:: symbol is undefined.
+  "link-args": ["-lc++"],
+  // The archive is built with CMAKE_OSX_DEPLOYMENT_TARGET=26.0, and an object
+  // built for a newer target than the binary linking it makes ld say so on
+  // every link unless it is told. See native/build-slang.sh.
+  "macos-min-version": "26.0",
   "targets": {
     "slang": {
       "type": "static-lib"

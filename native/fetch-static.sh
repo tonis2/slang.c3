@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 #
 # Fetch this host's prebuilt static archive from the `static` orphan branch into
-# lib/<target>/, and take the staged dylibs out of the way.
+# lib/<target>/.
 #
-#   ./native/fetch-static.sh              # this host's target
-#   ./native/fetch-static.sh --keep       # do not delete the staged dylibs
+#   ./native/fetch-static.sh
 #
-# This is the counterpart to stage-slang.sh, one level further along: that
-# script gets you Slang as shared libraries beside the binary, this one gets you
-# Slang *inside* the binary. Use it when the thing being produced is a single
-# file somebody downloads and runs; use stage-slang.sh otherwise, because it
-# needs no C++ toolchain and takes thirty seconds.
+# **This is the setup step — the only one.** slang.c3l links Slang statically
+# and has no other mode: there is no SDK to install, no dylibs to stage, no
+# rpath, and nothing beside the finished binary. It needs no C++ toolchain,
+# takes a few seconds, and a checkout that has not run it fails at the linker
+# with "library not found for -lslang".
 #
 # The archives are built by native/build-slang.sh on a machine of each target's
 # own architecture and pushed by native/publish-static.sh. They are not on main
@@ -22,8 +21,8 @@
 # without slang-glslang, which is where spirv-opt lives, and Slang runs
 # spirv-opt at its default -O1 — so a compile that never mentions optimisation
 # fails with "failed to load downstream compiler 'spirv-opt'". lib/<target>/
-# VERSION records which build you got. See build-slang.sh's header for why the
-# module cannot simply be linked in, and what -O0 costs.
+# VERSION records which build you got. See build-slang.sh's header for why that
+# module cannot be linked in whatever anybody does, and what -O0 costs.
 
 set -euo pipefail
 
@@ -32,11 +31,9 @@ cd "$here"
 
 BRANCH="${SLANG_STATIC_BRANCH:-static}"
 remote="origin"
-keep=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --keep) keep=1; shift ;;
         --remote) remote="${2:?--remote needs a name}"; shift 2 ;;
         --branch) BRANCH="${2:?--branch needs a name}"; shift 2 ;;
         *) echo "fetch-static: unknown argument '$1'" >&2; exit 1 ;;
@@ -87,15 +84,21 @@ fi
 found=$(nm -g "$out/$name" 2>/dev/null | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
 [[ "$found" == yes ]] || echo "fetch-static: WARNING — the archive does not define spCreateSession." >&2
 
-# `-lslang` prefers a dylib to an archive when both are in the search path, so
-# leaving the staged symlinks here means this script appears to have done
-# nothing. stage-slang.sh puts them back and removes the archive; whichever ran
-# last is what the next build links.
-if [[ $keep -eq 0 ]]; then
-    for stale in "$out"/*.dylib "$out"/*.so "$out"/*.so.* "$out"/*.dll; do
-        if [[ -e "$stale" || -L "$stale" ]]; then rm -f "$stale"; fi
-    done
-fi
+# Nothing writes shared libraries here any more — the SDK-staging script that
+# used to is gone. This sweeps what an older checkout of this library left
+# behind, and it is not cosmetic: `-lslang` prefers a dylib to an archive when
+# both are in the search path, so one surviving symlink from a previous version
+# silently produces the old, dynamically linked build and this script appears to
+# have done nothing.
+for stale in "$out"/*.dylib "$out"/*.so "$out"/*.so.* "$out"/*.dll "$out"/*.lib; do
+    if [[ -e "$stale" || -L "$stale" ]]; then
+        case "$stale" in
+            "$out/$name") continue ;;   # slang.lib on Windows IS the archive
+        esac
+        echo "fetch-static: removing $(basename "$stale") — left by an older checkout"
+        rm -f "$stale"
+    fi
+done
 
 git cat-file blob "FETCH_HEAD:$target/VERSION" 2>/dev/null | sed 's/^/  /' || true
 echo "fetch-static: wrote $out/$name ($size bytes)"

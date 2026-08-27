@@ -32,12 +32,19 @@ import std::core::test;
 
  `-matrix-layout-column-major` is not decoration: `slangc` defaults to it and
  the compile-request API does not. See `the_api_does_not_default_to_slangcs_matrix_layout`.
+
+ `-O0` is not optional. Slang is linked in as a static archive with no
+ slang-glslang, which is where `spirv-opt` lives, and Slang runs spirv-opt at
+ its default `-O1` — so a compile that never mentions optimization fails with
+ "failed to load downstream compiler 'spirv-opt'" and hands back an empty
+ module. Every FLAGS list here carries it for that reason.
 *>
 const String[*] FLAGS = {
 	"-target", "spirv",
 	"-emit-spirv-directly",
 	"-force-glsl-scalar-layout",
 	"-matrix-layout-column-major",
+	"-O0",
 };
 
 // The same, with the matrix layout said the other way and not said at all, for
@@ -47,12 +54,14 @@ const String[*] FLAGS_ROW_MAJOR = {
 	"-emit-spirv-directly",
 	"-force-glsl-scalar-layout",
 	"-matrix-layout-row-major",
+	"-O0",
 };
 
 const String[*] FLAGS_UNSAID = {
 	"-target", "spirv",
 	"-emit-spirv-directly",
 	"-force-glsl-scalar-layout",
+	"-O0",
 };
 
 <*
@@ -121,7 +130,7 @@ macro @with_session(; @body(slang::Session session))
 	slang::Session? opened = slang::session();
 	if (catch opened)
 	{
-		test::@check(false, "a session can be created — if this is the only failure, libslang-glslang is probably missing");
+		test::@check(false, "a session can be created — if this is the only failure, check that lib/<target>/libslang.a is the merged archive fetch-static.sh writes");
 		return;
 	}
 	slang::Session session = opened;

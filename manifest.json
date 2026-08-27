@@ -6,87 +6,61 @@
   // quickjs.c3l's shim exists to avoid — `extern fn` declarations reach it
   // directly. See the header of src/slang.c3.
   //
-  // **The dylibs are not in git.** libslang is 27 MB, and vendoring it would put
-  // that in this repository's history permanently — every SDK bump adding
-  // another copy that no later commit can remove. `native/stage-slang.sh`
-  // symlinks the two needed libraries out of an installed SDK into lib/<target>/
-  // instead, finding it through $SLANG_SDK or slangc on PATH. Run it once per
-  // checkout.
+  // **Slang is linked IN, as one static archive, and that is the only mode this
+  // binding has.** lib/<target>/ holds libslang.a — slang.lib on Windows — and
+  // nothing else. No dylibs, no rpaths, no SDK installed on the machine, and
+  // nothing beside the finished binary. `native/fetch-static.sh` puts it there,
+  // out of the `static` orphan branch; `native/build-slang.sh` is what built it.
   //
-  // Forgetting it fails at the linker with "library not found for -lslang" only
-  // on a machine with no other Slang. Where one is installed somewhere the
-  // linker searches by default, -lslang finds that one, links, and the build
-  // dies at startup in dyld naming a version nobody asked for. See the README.
+  // **The archive is not in git.** It is ~43 MB per target and is rebuilt on
+  // every Slang bump, so main would keep every version of every target for
+  // ever. Run `./native/fetch-static.sh` once per checkout. Skipping it fails
+  // at the linker with "library not found for -lslang".
   "linklib-dir": "lib",
   //
-  // **A consuming project on macOS wants `"macos-min-version": "15.0"` in its
-  // own project.json.** It cannot be set here: `macos-min-version` is a project
-  // property and c3c rejects it in a manifest by name. Without it c3c links for
-  // macOS 11.0, the SDK's dylibs are built for something newer, and ld says so
-  // on every single build — which buries anything real.
+  // **Every consumer must pass `-O0` to Slang.** The archives carry no
+  // spirv-opt: it lives in libslang-glslang, which Slang dlopens by name rather
+  // than links, so it cannot go inside an archive at all. Slang runs it at its
+  // default -O1, so a compile that never mentions optimization still fails with
+  // "failed to load downstream compiler 'spirv-opt'". See the README.
+  //
+  // **A consuming project on macOS wants `"macos-min-version": "26.0"`.** It
+  // cannot be set here — `macos-min-version` is a project property and c3c
+  // rejects it in a manifest by name. The archive is built with
+  // CMAKE_OSX_DEPLOYMENT_TARGET=26.0 (native/build-slang.sh), and an object
+  // built for a newer target than the binary linking it makes ld say so on
+  // every single build, which is how a real warning gets missed.
+  //
+  // **`link-args` is the C++ runtime and nothing else now.** Slang is C++. A
+  // shared library records libc++/libstdc++ as its own dependency and the
+  // consumer never sees it; an archive does not, so it has to be named here or
+  // every std:: symbol is undefined at link time.
   "targets": {
     "macos-aarch64": {
       "linked-libraries": ["slang"],
-      // libslang records its install name as @rpath/libslang-compiler.<ver>.dylib,
-      // so the linker needs somewhere to look at *runtime* as well as at link
-      // time. Both paths are relative — nothing here names a machine.
-      //
-      //   ../lib/slang.c3l/lib/macos-aarch64  the checkout, from an exe in build/
-      //   .                                   the dylibs copied beside a shipped binary
-      //
-      // A deployment that wants neither can set DYLD_LIBRARY_PATH.
-      "link-args": [
-        "-Wl,-rpath,@executable_path/../lib/slang.c3l/lib/macos-aarch64",
-        "-Wl,-rpath,@executable_path",
-        // Slang is C++. A dylib records libc++ as its own dependency and the
-        // consumer never sees it; a static archive does not, so the C++ runtime
-        // has to be named here or every std:: symbol is undefined at link time.
-        // Harmless on a dylib build, which already has it.
-        // native/build-slang.sh is what produces the archive.
-        "-lc++"
-      ]
+      "link-args": ["-lc++"]
     },
     "macos-x64": {
       "linked-libraries": ["slang"],
-      "link-args": [
-        "-Wl,-rpath,@executable_path/../lib/slang.c3l/lib/macos-x64",
-        "-Wl,-rpath,@executable_path"
-      ]
+      "link-args": ["-lc++"]
     },
+    // -lstdc++ rather than -lc++: build-slang.sh lets CMake pick the host C++
+    // compiler, and on the distributions this gets built on that is gcc.
+    // `-static-libstdc++` is worth considering instead for a binary meant to
+    // run on older systems than the one that built it — otherwise the
+    // executable picks up a version dependency on the build machine's libstdc++.
     "linux-x64": {
       "linked-libraries": ["slang"],
-      "link-args": [
-        "-Wl,-rpath,\\$ORIGIN/../lib/slang.c3l/lib/linux-x64",
-        "-Wl,-rpath,\\$ORIGIN"
-      ]
+      "link-args": ["-lstdc++"]
     },
     "linux-aarch64": {
       "linked-libraries": ["slang"],
-      "link-args": [
-        "-Wl,-rpath,\\$ORIGIN/../lib/slang.c3l/lib/linux-aarch64",
-        "-Wl,-rpath,\\$ORIGIN"
-      ]
+      "link-args": ["-lstdc++"]
     },
-    // **Windows resolves this differently, in three ways, and none of them is
-    // an rpath.**
-    //
-    // 1. `-lslang` reaches an IMPORT LIBRARY, `slang.lib`, not the DLL. Slang
-    //    ships it under `lib/` with no `lib` prefix — the Unix targets above
-    //    link `libslang.dylib`/`libslang.so` directly, and that name does not
-    //    exist here. `native/stage-slang.sh` stages `slang.lib` under this
-    //    same `linklib-dir`, so the manifest entry stays one word.
-    //
-    // 2. **There are no link-args**, and that is not an omission. Windows has
-    //    no rpath: the loader searches the directory of the .exe, then the
-    //    system directories, then PATH. Adding `-Wl,-rpath,...` here would be
-    //    passed to a linker that does not take it.
-    //
-    // 3. The consequence, which the Unix targets do not have: a freshly built
-    //    `build\three.exe` will NOT find `slang.dll`, because the DLLs are in
-    //    `lib/slang.c3l/lib/windows-x64/` and that is not one of the places the
-    //    loader looks. Either copy the two DLLs beside the exe or put that
-    //    directory on PATH. A shipped bundle has them beside the binary already,
-    //    which is why CI's smoke test runs from the bundle and not from build/.
+    // **`slang.lib`, not `libslang.a`.** c3c reads a static library as
+    // <name>.lib on Windows, with no `lib` prefix — the shape ktx.c3l ships
+    // zstd.lib in. No link-args: the MSVC C++ runtime comes from the archive's
+    // own CMAKE_MSVC_RUNTIME_LIBRARY and the consumer's build has to match it.
     "windows-x64": {
       "linked-libraries": ["slang"]
     }

@@ -84,13 +84,12 @@ found=$(nm -g "$archive" 2>/dev/null | awk '/ T _?spCreateSession$/ { f = 1 } EN
 version="$(sed -n 's/^SLANG_VERSION="${SLANG_VERSION:-\(.*\)}"$/\1/p' native/build-slang.sh)"
 [[ -n "$version" ]] || version="unknown"
 
-# glslang is a shared module Slang dlopens by name, so it cannot be inside the
-# archive. Which build this is decides whether a consumer must pass -O0, so it
-# is recorded rather than left to be rediscovered.
+# Recorded rather than left to be rediscovered: a consumer of this archive has
+# to pass -O0, because glslang — which is where spirv-opt lives — is a shared
+# module Slang dlopens by name and so can never be inside an archive. It is
+# always `absent`; the field stays so that a VERSION file from a future build
+# that somehow had it would say so rather than being silently identical.
 glslang=absent
-for f in lib/"$target"/*slang-glslang*; do
-    [[ -e "$f" ]] && glslang=beside-it
-done
 
 size="$(wc -c < "$archive" | tr -d ' ')"
 echo "publish-static: $target/$name — slang $version, ${size} bytes, glslang $glslang"

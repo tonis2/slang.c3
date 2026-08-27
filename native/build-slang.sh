@@ -4,21 +4,18 @@
 # lib/<target>/libslang.a, the way quickjs.c3l's build-quickjs.sh freezes
 # quickjs-ng.
 #
-#   ./native/build-slang.sh                 # host target, no glslang
-#   ./native/build-slang.sh --with-glslang   # keep spirv-opt (see below)
+#   ./native/build-slang.sh                 # host target
 #   ./native/build-slang.sh --jobs 8
 #   ./native/build-slang.sh --clean          # throw the CMake tree away first
 #
-# **This is an alternative to stage-slang.sh, not a replacement.** That script
-# is still the right default: it takes 30 seconds, needs no C++ toolchain, and
-# is what a checkout should run to get building. This one exists for the one
-# thing symlinked dylibs cannot do — ship `three` as a single file that a person
-# downloads and runs, with no libraries beside it and no rpath to get wrong.
+# **Most people never run this.** `native/fetch-static.sh` downloads the result
+# for this platform in a few seconds and needs no C++ toolchain. This script is
+# for the two cases that cannot: a target nobody has published yet, and a Slang
+# version bump — which is one line here, followed by publish-static.sh.
 #
-# The two are mutually exclusive inside lib/<target>/, because `-lslang` prefers
-# a dylib to an archive when both are there. This script deletes the staged
-# dylibs before writing the archive; re-running stage-slang.sh puts them back and
-# deletes the archive. Whichever ran last is what the next build links.
+# It writes lib/<target>/libslang.a and nothing else. slang.c3l links Slang
+# statically and has no other mode: no SDK on the machine, no dylibs, no rpath,
+# and nothing beside the finished binary.
 #
 # ## Why a source build at all
 #
@@ -49,7 +46,7 @@
 # So the merge is the point of this script, not an optimisation: one archive
 # means one -l, and the manifest entry stays the single word it already is.
 #
-# ## Why glslang is off by default, and what it costs
+# ## Why glslang is not built, and what that costs
 #
 # `libslang-glslang` is not glslang. It is glslang **and SPIRV-Tools**, and the
 # part of it Slang actually wants on the SPIR-V path is `spirv-opt`. Slang runs
@@ -66,11 +63,12 @@
 #     error[E00100]: failed to load downstream compiler 'spirv-opt'
 #     note[E99996]: failed to load dynamic library 'slang-glslang-2026.12.2'
 #
-# So a build that keeps glslang has two files to ship no matter how slang itself
-# is linked, and the single-file goal is gone. Hence OFF, and hence the coupling
-# below.
+# So a build that keeps glslang has a second file to ship no matter how slang
+# itself is linked, and the single-file property is gone. There is no flag to
+# build it: this library is static-only, and a shared module beside the binary
+# is the thing being got rid of.
 #
-# **A consumer of a no-glslang build must pass `-O0`.** three.c3 sets it in
+# **Every consumer must therefore pass `-O0`.** three.c3 sets it in
 # `SLANG_ARGUMENTS` (src/shader/compile.c3). Without it every compile fails with
 # the error above. What -O0 costs, measured on this project's own shaders with
 # slangc 2026.12.2:
@@ -81,11 +79,10 @@
 # spirv-opt makes the larger module 28 bytes *bigger* and the smaller one 12%
 # smaller. Module size is not runtime speed, and every Vulkan driver runs its own
 # optimizer over SPIR-V before it reaches the GPU — but Slang's direct emitter is
-# clearly not leaning on spirv-opt for much here.
-#
-# `--with-glslang` builds it anyway, for measuring that claim rather than
-# trusting it. The archive is still one file; slang-glslang lands beside it as a
-# shared module and has to be shipped.
+# clearly not leaning on spirv-opt for much here. Those two numbers are why
+# giving up spirv-opt is an acceptable price for one file instead of two; if you
+# ever want to re-measure them, compare against a `slangc` from a downloaded SDK
+# rather than reintroducing the shared module.
 #
 # ## What is deliberately not built
 #
@@ -119,23 +116,22 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Kept identical to stage-slang.sh on purpose. The tag decides the source, the
-# checksum table there decides the binaries, and a bump has to move both
-# together or a fetched SDK and a built archive are different compilers.
+# **This is the version pin, and there is only one now.** The tag decides the
+# source; publish-static.sh records it in lib/<target>/VERSION so a consumer can
+# see which compiler it fetched. Bumping Slang is this line, a rebuild, and a
+# publish — on a machine of each target's architecture.
 SLANG_VERSION="${SLANG_VERSION:-2026.12.2}"
 SLANG_REPO="${SLANG_REPO:-https://github.com/shader-slang/slang.git}"
 
-glslang=OFF
 jobs=""
 clean=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --with-glslang) glslang=ON; shift ;;
         --jobs) jobs="${2:?--jobs needs a number}"; shift 2 ;;
         --jobs=*) jobs="${1#*=}"; shift ;;
         --clean) clean=1; shift ;;
-        -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "build-slang: unknown argument '$1'" >&2; exit 1 ;;
     esac
 done
@@ -167,9 +163,9 @@ case "$(uname -s)/$(uname -m)" in
     # git-bash, MSYS2 and Cygwin each spell it differently and all three are how
     # a Windows checkout runs a shell script. c3c reads a static library as
     # <name>.lib there — no `lib` prefix — which is the shape ktx.c3l ships
-    # zstd.lib in, and is also the name stage-slang.sh gives Slang's IMPORT
-    # library. The two are mutually exclusive in this directory, and the install
-    # step below deletes whichever one it is replacing.
+    # zstd.lib in. Note that it is also what Slang's own SDK calls its IMPORT
+    # library, so on Windows the file name alone does not tell you which of the
+    # two you have; the symbol check at the end of this script does.
     MINGW*/*|MSYS*/*|CYGWIN*/*) target="windows-x64"; archive_name="slang.lib"; windows=1 ;;
     *) echo "build-slang: no target mapping for $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
@@ -213,9 +209,9 @@ elif command -v ninja >/dev/null; then
     generator="Ninja"
 fi
 
-# The source and the CMake tree live beside the fetched SDKs, keyed by version,
-# for stage-slang.sh's reason: they are large, they are reusable across
-# checkouts, and none of it belongs in git. $SLANG_C3_CACHE moves it.
+# The source and the CMake tree live in a per-machine cache keyed by version,
+# not in the checkout: they are large, they are reusable across checkouts, and
+# none of it belongs in git. $SLANG_C3_CACHE moves it.
 cache_root() {
     if [[ -n "${SLANG_C3_CACHE:-}" ]]; then echo "$SLANG_C3_CACHE"
     elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then echo "$XDG_CACHE_HOME/slang.c3"
@@ -225,18 +221,18 @@ cache_root() {
 
 root="$(cache_root)/src"
 src="$root/slang-$SLANG_VERSION"
-build="$root/build-$SLANG_VERSION-$target-glslang$glslang"
+build="$root/build-$SLANG_VERSION-$target"
 
-echo "build-slang: $target, slang v$SLANG_VERSION, glslang=$glslang, -j$jobs"
+echo "build-slang: $target, slang v$SLANG_VERSION, -j$jobs"
 
 # ---------------------------------------------------------------------------
 # Source
 # ---------------------------------------------------------------------------
 #
 # --depth 1 at the tag. The gitlink history is not wanted and the submodules are
-# large; what matters is that the tree is the pinned release and not whatever
-# main happens to be, which is the same argument stage-slang.sh makes for
-# pinning the asset.
+# large; what matters is that the tree is the pinned release rather than
+# whatever main happens to be, so that two machines building a month apart
+# produce the same compiler.
 if [[ ! -d "$src/.git" ]]; then
     echo "build-slang: cloning v$SLANG_VERSION"
     mkdir -p "$root"
@@ -261,7 +257,8 @@ cmake_args=(
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     -DSLANG_LIB_TYPE=STATIC
     -DSLANG_SLANG_LLVM_FLAVOR=DISABLE
-    -DSLANG_ENABLE_SLANG_GLSLANG="$glslang"
+    # See "Why glslang is not built" above — this is not a knob.
+    -DSLANG_ENABLE_SLANG_GLSLANG=OFF
     -DSLANG_ENABLE_GFX=OFF
     -DSLANG_ENABLE_SLANGD=OFF
     -DSLANG_ENABLE_SLANGI=OFF
@@ -431,26 +428,19 @@ case "$(uname -s)" in
 esac
 
 # ---------------------------------------------------------------------------
-# Install, and take the dylibs out of the way
+# Install
 # ---------------------------------------------------------------------------
 #
-# `-lslang` prefers libslang.dylib to libslang.a when both are in the search
-# path, so leaving a stale symlink here means this script appears to do nothing.
+# Nothing writes shared libraries into lib/<target>/ any more, but an older
+# checkout of this library did, and `-lslang` prefers libslang.dylib to
+# libslang.a when both are in the search path — so a survivor would silently
+# produce the old dynamically linked build and make this script look like it did
+# nothing. Swept rather than assumed absent.
 for stale in "$out"/*.dylib "$out"/*.so "$out"/*.so.* "$out"/*.dll "$out"/slang.lib; do
     if [[ -e "$stale" || -L "$stale" ]]; then rm -f "$stale"; fi
 done
 rm -f "$out/$archive_name"
 cp "$merged" "$out/$archive_name"
-
-# The one library that cannot be merged in, when it was asked for: Slang dlopens
-# it by name, so it has to stay a shared module and be shipped beside the binary.
-if [[ "$glslang" == ON ]]; then
-    while IFS= read -r f; do
-        case "$f" in
-            *.dylib|*.so|*.so.*|*.dll) cp "$f" "$out/" ;;
-        esac
-    done < <(find "$build" -name '*slang-glslang*')
-fi
 
 # ---------------------------------------------------------------------------
 # Check it
@@ -492,13 +482,11 @@ fi
 
 size=$(du -h "$out/$archive_name" | cut -f1)
 echo "build-slang: wrote $out/$archive_name ($size)"
-if [[ "$glslang" == OFF ]]; then
-    cat <<'EOF'
+cat <<'EOF'
 
   This archive has no spirv-opt. A consumer MUST pass -O0 to Slang, or every
   compile fails with "failed to load downstream compiler 'spirv-opt'".
   In three.c3 that is SLANG_ARGUMENTS in src/shader/compile.c3.
 EOF
-fi
 
 echo "build-slang: the CMake tree is kept at $build — a re-run is incremental."
