@@ -57,12 +57,24 @@
       "linked-libraries": ["slang"],
       "link-args": ["-lstdc++"]
     },
+    // **`msvcrt` is named here, and only for its POSITION in the link line.**
+    // c3c passes `... ucrt.lib vcruntime.lib msvcrt.lib`, and both of the last
+    // two define __report_gsfailure — msvcrt.lib as a real object, vcruntime.lib
+    // as a DLL import thunk. Slang is built with MSVC's default /GS, so its
+    // objects reference __security_check_cookie, which only msvcrt.lib defines;
+    // pulling it drags in __report_gsfailure too, and vcruntime.lib then replaces
+    // that definition. lld-link refuses:
+    //   lld-link: error: __report_gsfailure was replaced
+    // A library's own linked-libraries land ahead of c3c's CRT list, so naming
+    // msvcrt here lets it claim the symbol before vcruntime.lib is reached. The
+    // archive is listed twice in the end, which costs nothing.
+    //
     // **`slang.lib`, not `libslang.a`.** c3c reads a static library as
     // <name>.lib on Windows, with no `lib` prefix — the shape ktx.c3l ships
     // zstd.lib in. No link-args: the MSVC C++ runtime comes from the archive's
     // own CMAKE_MSVC_RUNTIME_LIBRARY and the consumer's build has to match it.
     "windows-x64": {
-      "linked-libraries": ["slang"]
+      "linked-libraries": ["slang", "msvcrt"]
     }
   }
 }
