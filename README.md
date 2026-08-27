@@ -10,6 +10,11 @@ walk the reflection into a descriptor set layout.
 ./native/stage-slang.sh
 ```
 
+That is the one to run. There is a second mode — **Slang linked into your binary
+as one static archive**, for shipping a single file — described under
+[Linking Slang in](#linking-slang-in). It needs no C++ toolchain either, as long
+as somebody has published an archive for your platform.
+
 That is the whole requirement, whether or not you have Slang installed. The
 script looks for an SDK — `$SLANG_SDK`, then one it fetched earlier, then
 `slangc` on `PATH`, then the usual places — and **if it finds none, it downloads
@@ -172,6 +177,9 @@ rather than its name, so it works whatever the shader calls it.
 
 ## What is linked, and what is not
 
+This is the default — `stage-slang.sh`, shared libraries beside the binary. The
+static alternative is the [next section](#linking-slang-in).
+
 Two libraries, 35 MB
 
 | library | size | why |
@@ -196,6 +204,130 @@ anything.
 binary is the right trade for an application whose whole point is compiling
 shaders at runtime, and the wrong one for a game that ships fixed shaders. For
 the latter, compile ahead of time and link nothing from here.
+
+If you want the compiler at runtime *and* a single file to hand somebody, that
+is what the next section is for.
+
+## Linking Slang in
+
+Everything above puts Slang beside your binary. This puts it inside:
+
+```sh
+./native/fetch-static.sh     # download a prebuilt archive for this platform
+c3c build
+```
+
+You get one executable with no Slang libraries next to it and no rpath to get
+wrong. Two things do have to change on your side — a compile flag and a link
+flag — and they are the two subsections below.
+
+> **Only `macos-aarch64` has been built and run this way.** The Linux path
+> should work as written but nobody has published an archive yet. The Windows
+> path in `build-slang.sh` — MSVC, `lib.exe` through a response file — is
+> written from the tools' documented behaviour and has never been executed.
+
+`fetch-static.sh` and `stage-slang.sh` are alternatives, not a sequence. Both
+write to `lib/<target>/`, `-lslang` prefers a shared library to an archive when
+both are present, and each script deletes what the other left. Whichever ran
+last is what the next build links.
+
+### The compile flag
+
+**Pass `-O0` to every compile.** The archives are built without
+`libslang-glslang`, and that is where `spirv-opt` lives. Slang runs spirv-opt at
+its *default* optimization level — `-O1`, per `slangc -h optimization-level`:
+"This is the default if no -O options are used" — so a compile that never
+mentions optimization still needs it, and fails without it:
+
+```
+error[E00100]: failed to load downstream compiler 'spirv-opt'
+note[E99996]: failed to load dynamic library 'slang-glslang-2026.12.2'
+```
+
+`-emit-spirv-directly` does not change this. It selects the codegen path; the
+optimizer runs after codegen either way.
+
+**Why it cannot simply be linked in too:** Slang does not link slang-glslang, it
+`dlopen`s it by name at runtime. `otool -L libslang-compiler.dylib` lists only
+libc++ and libSystem. So a build that keeps glslang has two files to ship
+however slang itself is linked, and the single-file goal is gone.
+
+**What `-O0` costs**, measured on a real project's shaders with Slang 2026.12.2:
+
+| shader | `-O0` | `-O1` |
+|---|---|---|
+| vertex + fragment, ~800 lines | 28700 B | 28728 B |
+| vertex only, depth pass | 11776 B | 10320 B |
+
+spirv-opt makes the larger module 28 bytes *bigger* and the smaller one 12%
+smaller. Module size is not runtime speed — but every Vulkan driver runs its own
+optimizer over SPIR-V before it reaches the GPU, and Slang's direct emitter is
+plainly not leaning on spirv-opt for much.
+
+### The link flag
+
+**Your link line needs the C++ runtime.** A shared library records libc++ as its
+own dependency and you never see it; an archive does not. `manifest.json` passes
+`-lc++` on macOS. On Linux add `-lstdc++` (and consider `-static-libstdc++`, or
+the binary picks up a dependency on the build machine's libstdc++ version).
+
+**Windows names it `slang.lib`, not `libslang.a`** — c3c reads a static library
+as `<name>.lib` there, with no `lib` prefix. That is also the name
+`stage-slang.sh` gives Slang's *import* library, so the two collide by design and
+whichever script ran last wins.
+
+### Where the archives come from
+
+They are not on `main` and not in a plain checkout. They live on a **`static`
+orphan branch**, one force-pushed commit however many Slang bumps it has seen:
+~43 MB per target, rebuilt on every bump, so `main` would keep every version of
+every target for ever. It is cheaper than it sounds — git stores blobs
+compressed and this is object code, so 43 MB on disk is about 15 MB in the pack.
+
+| | |
+|---|---|
+| `macos-aarch64/libslang.a` | 42.8 MB |
+| `macos-aarch64/VERSION` | what it was built from |
+
+Building one yourself, if your platform is not there yet:
+
+```sh
+./native/build-slang.sh          # 15-40 min; the CMake tree is kept for re-runs
+./native/publish-static.sh       # push it to the `static` branch
+```
+
+`build-slang.sh` configures Slang with `SLANG_LIB_TYPE=STATIC` and merges every
+archive the build produces into one. That merge is the point of the script, not
+an optimisation: a static build emits the compiler plus every internal target it
+links privately — `core`, `compiler-core`, `slang-capability-*`,
+`slang-lookup-tables`, and vendored miniz, lz4 and SPIRV-Tools. Slang's own
+CMakeLists says a link line naming only `-lslang-compiler` "omits every
+transitive internal archive ... causing unresolved-symbol errors at link time",
+and c3c cannot express the alternative — `linked-libraries` is a list of `-l`
+names in no guaranteed order with no `--start-group`. One archive means one
+`-l`.
+
+`publish-static.sh` starts from whatever is already on the branch, so publishing
+one target never deletes another, and it assembles its commit in a temporary
+index rather than checking out — this repository's tree is normally dirty, since
+`lib/<target>/` is where the archive being published lives.
+
+### Host target only
+
+**A `windows-x64` archive is built on Windows, `linux-x64` on Linux,
+`macos-aarch64` on Apple silicon.** Not a limitation of these scripts — three
+things stack:
+
+- CMake compiles tools during Slang's build and then *runs* them. Cross-building
+  means building those for the host first and pointing a second configure at
+  them through `SLANG_GENERATORS_PATH`. Supported, but a two-stage build.
+- Slang's CMakeLists knows `WIN32` and `MSVC` and has **no `MINGW` branch**, so
+  the usual cross-to-Windows compiler is not a configuration it supports.
+- Off Windows there is no MSVC-ABI C++ compiler without a separate SDK
+  extraction step.
+
+Which is exactly why the branch is keyed by target and each machine publishes
+its own.
 
 ## Why the deprecated C API
 
@@ -240,6 +372,10 @@ compiling three ways and comparing bytes, so an SDK that changes it says so.
 ./native/stage-slang.sh
 c3c test        # 11 tests, no GPU, about 0.7 s
 ```
+
+The suite passes against a static archive too — `./native/fetch-static.sh`
+instead of the first line — but every compile in it then needs `-O0`, for the
+reason under [Linking Slang in](#linking-slang-in).
 
 `project.json` is the standalone build; `manifest.json` is what consumers read.
 They must be kept in step, and they differ in two structural ways — a
