@@ -152,8 +152,9 @@ done
 #                    C++ for that ABI without a separate SDK-extraction step.
 #
 # The practical rule: **a windows-x64 archive is built on Windows, a linux-x64
-# archive on Linux, and a macos-aarch64 archive on Apple silicon.** That is what
-# the per-target `static` branch is for — each machine publishes its own.
+# archive on Linux, and a macos-aarch64 archive on Apple silicon.** That is why
+# the archives are published one asset per target — each machine uploads its own,
+# and publish-static.sh merges rather than replaces.
 windows=0
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64)   target="macos-aarch64"; archive_name="libslang.a" ;;

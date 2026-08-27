@@ -1,60 +1,58 @@
 #!/usr/bin/env bash
 #
-# Push the archive built by build-slang.sh to the `static` orphan branch.
+# Publish the archive built by build-slang.sh as a GitHub release asset.
 #
 #   ./native/publish-static.sh                # this host's target
-#   ./native/publish-static.sh --dry-run      # build the commit, do not push
-#   ./native/publish-static.sh --remote up    # a remote other than origin
+#   ./native/publish-static.sh --dry-run      # show what would be uploaded
+#   ./native/publish-static.sh --repo o/n     # a repository other than the default
 #
-# ## Why a branch and not main
+# ## Why a release asset and not a branch
 #
-# The merged archive is ~43 MB per target, and it is rebuilt on every Slang bump.
-# On main, git would keep every version of every target for ever — the same
-# argument that keeps the SDK dylibs out of this repository in the first place,
-# and the same one vulkan.c3l's `driver` branch was created for. This mirrors
-# that branch deliberately, down to the fetch: one orphan commit, force-pushed,
-# so the branch has exactly one revision however many bumps it has seen.
+# The merged archive is ~43 MB per target and is rebuilt on every Slang bump.
+# Committing it to main would make git keep every version of every target for
+# ever. That much was always true — what an orphan `static` branch got wrong is
+# subtler: it kept the archives out of a *checkout* but not out of the *object
+# database*, and `git clone` fetches every `refs/heads/*` whether or not anyone
+# asked for it. So every clone of this repository, and of every project using it
+# as a submodule, paid for all of them. There is no way to mark a branch
+# "do not clone me".
 #
-# It is cheaper than it sounds. git stores blobs zlib-compressed and this
-# archive is object code: 42.8 MB on disk is about 14.5 MB in the pack, so all
-# three targets together cost roughly what one uncompressed copy would. Old
-# objects linger after a force-push until GitHub garbage-collects, which is
-# also true of the driver branch and has not been a problem there.
+# Release assets are not reachable from any ref. A clone pays nothing, and
+# fetch-static.sh pulls exactly the one archive the fetching machine can link.
 #
-# ## Why plumbing rather than a checkout
-#
-# Nothing below touches the working tree or HEAD. A `git checkout --orphan`
-# would refuse or clobber, since this repository normally has a dirty tree —
-# lib/<target>/ is where the archive being published *lives*. So the commit is
-# assembled in a temporary index with hash-object/update-index/commit-tree,
-# and the branch is written by pushing a commit id at a ref. The checkout you
-# ran this from is not modified in any way.
-#
-# ## Why it starts from the existing branch
+# ## Why it starts from the existing SHA256SUMS
 #
 # Each target is built on its own machine — a Mac cannot produce the Linux
 # archive, because Slang's build runs generators it compiled for the host. So a
-# publish must ADD this target to whatever is already on the branch rather than
-# replace it. The fetch below is what makes that true; without it, publishing
-# from a Mac would silently delete the linux-x64 archive somebody else pushed.
+# publish must ADD this target to whatever is already published rather than
+# replace it. The merge below is what makes that true; without it, publishing
+# from a Mac would drop the linux-x64 line somebody else uploaded.
+#
+# That merge is read-modify-write against one file, so two machines publishing
+# at the same moment can lose one of the two lines. Publishes are rare and
+# manual; if it happens, re-run the losing one.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 
-BRANCH="${SLANG_STATIC_BRANCH:-static}"
-remote="origin"
+REPO="${SLANG_C3_REPO:-tonis2/slang.c3}"
+TAG="${SLANG_STATIC_TAG:-static}"
 dry=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) dry=1; shift ;;
-        --remote) remote="${2:?--remote needs a name}"; shift 2 ;;
-        --branch) BRANCH="${2:?--branch needs a name}"; shift 2 ;;
+        --repo)    REPO="${2:?--repo needs owner/name}"; shift 2 ;;
+        --tag)     TAG="${2:?--tag needs a name}"; shift 2 ;;
         *) echo "publish-static: unknown argument '$1'" >&2; exit 1 ;;
     esac
 done
+
+command -v gh >/dev/null 2>&1 || {
+    echo "publish-static: needs the GitHub CLI — https://cli.github.com" >&2
+    exit 1; }
 
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64)   target="macos-aarch64"; name="libslang.a" ;;
@@ -73,12 +71,17 @@ archive="lib/$target/$name"
     exit 1; }
 
 # **The same check build-slang.sh ends with, repeated here on purpose.** This is
-# the last point at which a bad archive is cheap: past it, it is on a branch
-# that other machines fetch, and the failure it causes is an unresolved symbol
-# in a consumer's link naming a file the consumer does not own.
-found=$(nm -g "$archive" 2>/dev/null | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
+# the last point at which a bad archive is cheap: past it, it is an asset other
+# machines fetch, and the failure it causes is an unresolved symbol in a
+# consumer's link naming a file the consumer does not own.
+# `|| true` so that `set -e` plus `set -o pipefail` cannot kill the script at the
+# assignment when nm fails -- the refusal below is the message worth printing,
+# and a silent non-zero exit here would look like a different bug entirely.
+found=$({ nm -g "$archive" 2>/dev/null || true; } | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
 [[ "$found" == yes ]] || {
     echo "publish-static: $archive does not define spCreateSession — refusing to publish it." >&2
+    echo "  (If nm on this host cannot read the archive at all, that is the same" >&2
+    echo "   message; check it by hand before overriding.)" >&2
     exit 1; }
 
 version="$(sed -n 's/^SLANG_VERSION="${SLANG_VERSION:-\(.*\)}"$/\1/p' native/build-slang.sh)"
@@ -92,51 +95,72 @@ version="$(sed -n 's/^SLANG_VERSION="${SLANG_VERSION:-\(.*\)}"$/\1/p' native/bui
 glslang=absent
 
 size="$(wc -c < "$archive" | tr -d ' ')"
-echo "publish-static: $target/$name — slang $version, ${size} bytes, glslang $glslang"
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+hash="$(sha256_of "$archive")"
+
+# Assets are a flat namespace, so the target goes in the filename rather than in
+# a directory the way it did on the branch. fetch-static.sh derives the same
+# name from `uname` — keep the two in step.
+asset="${name%.*}-${target}.${name##*.}"
+
+echo "publish-static: $asset — slang $version, ${size} bytes, glslang $glslang"
+echo "  sha256 $hash"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-export GIT_INDEX_FILE="$tmp/index"
 
-# The branch may not exist yet; the first publish creates it.
-if git fetch --depth 1 "$remote" "$BRANCH" 2>/dev/null; then
-    echo "  starting from the existing $BRANCH"
-    git read-tree FETCH_HEAD
-else
-    echo "  $BRANCH does not exist yet — creating it"
-    git read-tree --empty
-fi
+cp "$archive" "$tmp/$asset"
 
-blob="$(git hash-object -w "$archive")"
-git update-index --add --cacheinfo "100644,$blob,$target/$name"
-
-# One manifest per target rather than one for the branch, so two machines
-# publishing different targets never write the same path and never conflict.
-note="$tmp/note"
-cat > "$note" <<EOF
+cat > "$tmp/VERSION-$target" <<EOF
 slang $version
 target $target
 archive $name
 bytes $size
+sha256 $hash
 glslang $glslang
 built-by build-slang.sh
 EOF
-noteblob="$(git hash-object -w "$note")"
-git update-index --add --cacheinfo "100644,$noteblob,$target/VERSION"
 
-tree="$(git write-tree)"
-# No parent: every publish replaces the branch with a single commit, so the
-# history never accumulates a second copy of a 43 MB archive.
-commit="$(git commit-tree "$tree" -m "static archives: $target, slang $version")"
+# Merge rather than overwrite: drop any previous line for THIS asset, keep every
+# other target's, add the new one, sort so the file is stable to diff.
+sums="$tmp/SHA256SUMS"
+: > "$sums"
+if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+    if gh release download "$TAG" -R "$REPO" -p SHA256SUMS -O "$tmp/existing" 2>/dev/null; then
+        grep -v "  $asset\$" "$tmp/existing" > "$sums" || true
+    fi
+    release_exists=1
+else
+    release_exists=0
+fi
+printf '%s  %s\n' "$hash" "$asset" >> "$sums"
+sort -k2 -o "$sums" "$sums"
 
-echo "  commit $commit"
-git ls-tree -r --long "$tree" | awk '{ printf "    %10s  %s\n", $4, $5 }'
+echo "  SHA256SUMS after merge:"
+sed 's/^/    /' "$sums"
 
 if [[ $dry -eq 1 ]]; then
-    echo "publish-static: --dry-run, not pushing. To push it:"
-    echo "  git push --force $remote $commit:refs/heads/$BRANCH"
+    echo "publish-static: --dry-run, not uploading. It would run:"
+    [[ $release_exists -eq 1 ]] || \
+        echo "  gh release create $TAG -R $REPO --title $TAG --notes 'Prebuilt static Slang archives.'"
+    echo "  gh release upload $TAG -R $REPO --clobber $asset VERSION-$target SHA256SUMS"
     exit 0
 fi
 
-git push --force "$remote" "$commit:refs/heads/$BRANCH"
-echo "publish-static: pushed to $remote/$BRANCH"
+if [[ $release_exists -eq 0 ]]; then
+    echo "  '$TAG' does not exist yet — creating it"
+    gh release create "$TAG" -R "$REPO" --title "$TAG" \
+        --notes "Prebuilt static Slang archives, one per target. Fetched by native/fetch-static.sh; not in git, so a clone does not pay for them."
+fi
+
+gh release upload "$TAG" -R "$REPO" --clobber \
+    "$tmp/$asset" "$tmp/VERSION-$target" "$sums"
+
+echo "publish-static: uploaded to $REPO release '$TAG'"

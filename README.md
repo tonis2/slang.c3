@@ -39,16 +39,28 @@ prefers a shared library to an archive.
 
 ### Where the archives come from
 
-They are not on `main` and not in a plain checkout. They live on a **`static`
-orphan branch**, one force-pushed commit however many Slang bumps it has seen:
-~43 MB per target, rebuilt on every bump, so `main` would keep every version of
-every target for ever. It is cheaper than it sounds — git stores blobs
-compressed and this is object code, so 43 MB on disk is about 15 MB in the pack.
+They are not on `main` and not in a plain checkout. They are **GitHub release
+assets**, on the rolling `static` tag: ~43 MB per target, rebuilt on every Slang
+bump, so `main` would keep every version of every target for ever.
 
-| | |
+They used to live on a `static` orphan *branch*, and that was the wrong shape for
+a reason worth recording. A branch keeps a binary out of a checkout but not out
+of the object database — `git clone` fetches every `refs/heads/*`
+unconditionally, and there is no way to mark a branch "do not clone me". So every
+clone of this repository, and of every project using it as a submodule, paid for
+all of them regardless. A release asset is not reachable from any ref: a clone
+costs nothing and `fetch-static.sh` pulls only the one archive the fetching
+machine can actually link.
+
+| asset | |
 |---|---|
-| `macos-aarch64/libslang.a` | 42.8 MB |
-| `macos-aarch64/VERSION` | slang version, size, and how it was built |
+| `libslang-macos-aarch64.a` | 42.8 MB |
+| `VERSION-macos-aarch64` | slang version, size, sha256, and how it was built |
+| `SHA256SUMS` | one line per published asset — what `fetch-static.sh` verifies against |
+
+The tag is rolling, so it alone promises nothing; `SHA256SUMS` is the pin, and a
+mismatch fails the fetch by name rather than surfacing as an unresolved symbol in
+a consumer's link.
 
 > **Only `macos-aarch64` is published, and only it has been built and run.** The
 > Linux path should work as written but nobody has published an archive yet.
@@ -60,7 +72,7 @@ Building one yourself, if your platform is not there yet:
 
 ```sh
 ./native/build-slang.sh          # 15-40 min; the CMake tree is kept for re-runs
-./native/publish-static.sh       # push it to the `static` branch
+./native/publish-static.sh       # upload it to the `static` release
 ```
 
 **A `windows-x64` archive is built on Windows, `linux-x64` on Linux,
@@ -97,10 +109,11 @@ unresolved-symbol errors at link time", and c3c cannot express the alternative:
 `--start-group`. One archive means one `-l`, and the manifest entry stays the
 single word it already is.
 
-`publish-static.sh` starts from whatever is already on the branch, so publishing
-one target never deletes another, and it assembles its commit in a temporary
-index rather than checking out — this repository's tree is normally dirty, since
-`lib/<target>/` is where the archive being published lives.
+`publish-static.sh` merges into whatever `SHA256SUMS` is already published, so
+uploading one target never drops another's line. That merge is a
+read-modify-write on one file, so two machines publishing at the same instant can
+lose one of them; publishes are rare and manual, and the fix is to re-run the
+losing one.
 
 ### The compile flag
 
@@ -310,7 +323,8 @@ they are.
 The binding is MIT (`LICENSE`). Slang itself is Apache-2.0 WITH LLVM-exception.
 
 **Note that a static link redistributes it.** No Slang code is in this
-repository's `main`, but the archive on the `static` branch is Slang compiled,
+repository's `main`, but the archive published on the `static` release is Slang
+compiled,
 and a binary linking it contains Slang — so the Apache-2.0 attribution
 requirements apply to whatever you ship. That was not true of the SDK-staging
 arrangement this replaced, where the libraries came from an SDK the user
