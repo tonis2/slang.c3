@@ -37,7 +37,13 @@
       // A deployment that wants neither can set DYLD_LIBRARY_PATH.
       "link-args": [
         "-Wl,-rpath,@executable_path/../lib/slang.c3l/lib/macos-aarch64",
-        "-Wl,-rpath,@executable_path"
+        "-Wl,-rpath,@executable_path",
+        // Slang is C++. A dylib records libc++ as its own dependency and the
+        // consumer never sees it; a static archive does not, so the C++ runtime
+        // has to be named here or every std:: symbol is undefined at link time.
+        // Harmless on a dylib build, which already has it.
+        // native/build-slang.sh is what produces the archive.
+        "-lc++"
       ]
     },
     "macos-x64": {
