@@ -77,7 +77,19 @@ archive="lib/$target/$name"
 # `|| true` so that `set -e` plus `set -o pipefail` cannot kill the script at the
 # assignment when nm fails -- the refusal below is the message worth printing,
 # and a silent non-zero exit here would look like a different bug entirely.
-found=$({ nm -g "$archive" 2>/dev/null || true; } | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        # dumpbin, for the reason build-slang.sh uses it: nm cannot read an MSVC
+        # .lib, and MSYS rewrites a bare switch into a path before it arrives.
+        check_win="$archive"
+        if command -v cygpath >/dev/null 2>&1; then check_win="$(cygpath -w "$archive")"; fi
+        found=$({ MSYS2_ARG_CONV_EXCL="*" dumpbin /NOLOGO /LINKERMEMBER:1 "$check_win" 2>/dev/null || true; } \
+            | awk '/spCreateSession/ { f = 1 } END { if (f) print "yes" }')
+        ;;
+    *)
+        found=$({ nm -g "$archive" 2>/dev/null || true; } | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
+        ;;
+esac
 [[ "$found" == yes ]] || {
     echo "publish-static: $archive does not define spCreateSession — refusing to publish it." >&2
     echo "  (If nm on this host cannot read the archive at all, that is the same" >&2
@@ -94,7 +106,7 @@ version="$(sed -n 's/^SLANG_VERSION="${SLANG_VERSION:-\(.*\)}"$/\1/p' native/bui
 # that somehow had it would say so rather than being silently identical.
 glslang=absent
 
-size="$(wc -c < "$archive" | tr -d ' ')"
+raw_size="$(wc -c < "$archive" | tr -d ' ')"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -103,26 +115,39 @@ sha256_of() {
         shasum -a 256 "$1" | awk '{print $1}'
     fi
 }
-hash="$(sha256_of "$archive")"
 
 # Assets are a flat namespace, so the target goes in the filename rather than in
 # a directory the way it did on the branch. fetch-static.sh derives the same
 # name from `uname` — keep the two in step.
-asset="${name%.*}-${target}.${name##*.}"
-
-echo "publish-static: $asset — slang $version, ${size} bytes, glslang $glslang"
-echo "  sha256 $hash"
+#
+# **Published gzipped, and windows-x64 is why.** That archive is ~280 MB raw
+# against ~45 MB for the same compiler on macOS: MSVC writes a full mangled name
+# into the COFF symbol table for every template instantiation and COMDAT, which
+# is 86% of a typical object here and which the linker then discards. It
+# compresses to ~43 MB. The ELF and Mach-O archives shrink by roughly the same
+# proportion, so this is not a Windows special case and there is one code path.
+#
+# The hash is of the .gz — the bytes that come off the wire — so fetch-static.sh
+# verifies the download before it unpacks it.
+asset="${name%.*}-${target}.${name##*.}.gz"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-cp "$archive" "$tmp/$asset"
+gzip -9 -c "$archive" > "$tmp/$asset"
+size="$(wc -c < "$tmp/$asset" | tr -d ' ')"
+hash="$(sha256_of "$tmp/$asset")"
+
+echo "publish-static: $asset — slang $version, $size bytes gzipped from $raw_size, glslang $glslang"
+echo "  sha256 $hash"
 
 cat > "$tmp/VERSION-$target" <<EOF
 slang $version
 target $target
 archive $name
-bytes $size
+bytes $raw_size
+asset $asset
+asset-bytes $size
 sha256 $hash
 glslang $glslang
 built-by build-slang.sh

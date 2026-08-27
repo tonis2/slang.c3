@@ -409,7 +409,8 @@ case "$(uname -s)" in
         done
         out_win="$merged"
         if command -v cygpath >/dev/null 2>&1; then out_win="$(cygpath -w "$merged")"; fi
-        "$archiver" /NOLOGO "/OUT:$out_win" "@$(command -v cygpath >/dev/null 2>&1 && cygpath -w "$rsp" || echo "$rsp")"
+        # MSYS turns a bare /NOLOGO into a Windows path before lib.exe sees it.
+        MSYS2_ARG_CONV_EXCL="*" "$archiver" /NOLOGO "/OUT:$out_win" "@$(command -v cygpath >/dev/null 2>&1 && cygpath -w "$rsp" || echo "$rsp")"
         ;;
     Darwin)
         # libtool rather than ar: two archives in this set contain a member with
@@ -466,7 +467,12 @@ cp "$merged" "$out/$archive_name"
 found=""
 if [[ $windows -eq 1 ]]; then
     if command -v dumpbin >/dev/null 2>&1; then
-        found=$(dumpbin /NOLOGO /LINKERMEMBER:1 "$out/$archive_name" 2>/dev/null \
+        # Same MSYS trap as the merge above: the switches must reach dumpbin
+        # literally. `|| true` because a failing pipeline here would otherwise
+        # kill the script at the assignment, after a good archive was written.
+        check_win="$out/$archive_name"
+        if command -v cygpath >/dev/null 2>&1; then check_win="$(cygpath -w "$check_win")"; fi
+        found=$({ MSYS2_ARG_CONV_EXCL="*" dumpbin /NOLOGO /LINKERMEMBER:1 "$check_win" 2>/dev/null || true; } \
             | awk '/spCreateSession/ { f = 1 } END { if (f) print "yes" }')
     elif command -v llvm-nm >/dev/null 2>&1; then
         found=$(llvm-nm "$out/$archive_name" 2>/dev/null \

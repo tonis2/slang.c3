@@ -120,7 +120,18 @@ else
     exit 1
 fi
 
-want="$(awk -v a="$asset" '$2 == a { print $1 }' "$sums")"
+# A target publishes its archive gzipped — see publish-static.sh for why — but
+# an asset uploaded before that change is still raw, so SHA256SUMS is the
+# authority on which one this release carries. The .gz is preferred when both
+# are listed. Either way the hash is of the file as downloaded.
+compressed=0
+want="$(awk -v a="$asset.gz" '$2 == a { print $1 }' "$sums")"
+if [[ -n "$want" ]]; then
+    compressed=1
+    asset="$asset.gz"
+else
+    want="$(awk -v a="$asset" '$2 == a { print $1 }' "$sums")"
+fi
 if [[ -z "$want" ]]; then
     echo "fetch-static: the '$TAG' release carries no archive for $target." >&2
     echo "  It has:" >&2
@@ -130,11 +141,24 @@ if [[ -z "$want" ]]; then
     exit 1
 fi
 
-if [[ $force -eq 0 && -f "$out/$name" ]] \
-   && [[ "$(sha256_of "$out/$name")" == "$want" ]]; then
+cached="$CACHE/$want"
+
+# `want` hashes the asset, which for a gzipped target is not the file that ends
+# up in lib/<target>/ — so the already-have check asks the cached .gz instead.
+# A cleared cache costs one re-download; hashing the unpacked archive against a
+# compressed-file hash would fail every run and re-fetch for ever.
+have=0
+if [[ $force -eq 0 && -f "$out/$name" ]]; then
+    if [[ $compressed -eq 1 ]]; then
+        [[ -f "$cached" && "$(sha256_of "$cached")" == "$want" ]] && have=1
+    else
+        [[ "$(sha256_of "$out/$name")" == "$want" ]] && have=1
+    fi
+fi
+
+if [[ $have -eq 1 ]]; then
     echo "  $name: present"
 else
-    cached="$CACHE/$want"
     if [[ ! -f "$cached" || "$(sha256_of "$cached")" != "$want" ]]; then
         if [[ $allow_fetch -eq 0 ]]; then
             echo "fetch-static: $asset is not cached and --no-fetch was given." >&2
@@ -159,7 +183,11 @@ else
     else
         echo "  $asset: from cache"
     fi
-    cp "$cached" "$out/$name"
+    if [[ $compressed -eq 1 ]]; then
+        gzip -dc "$cached" > "$out/$name"
+    else
+        cp "$cached" "$out/$name"
+    fi
 fi
 
 # 1 MB rather than -s: a fetch that went wrong can still leave a file, and a
@@ -177,7 +205,26 @@ fi
 # `set -e` exits the script. So on any host whose nm cannot read this archive --
 # no nm at all, or a format it does not know -- an advisory check would abort the
 # fetch instead of warning about it.
-found=$({ nm -g "$out/$name" 2>/dev/null || true; } | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        # nm is not in git-bash and could not read an MSVC .lib if it were, so
+        # the advisory check would warn on every good fetch. dumpbin reads the
+        # archive's own symbol index; MSYS2_ARG_CONV_EXCL keeps it from
+        # rewriting the switches into paths before dumpbin sees them.
+        if command -v dumpbin >/dev/null 2>&1; then
+            check_win="$out/$name"
+            if command -v cygpath >/dev/null 2>&1; then check_win="$(cygpath -w "$check_win")"; fi
+            found=$({ MSYS2_ARG_CONV_EXCL="*" dumpbin /NOLOGO /LINKERMEMBER:1 "$check_win" 2>/dev/null || true; } \
+                | awk '/spCreateSession/ { f = 1 } END { if (f) print "yes" }')
+        else
+            # No MSVC on PATH is normal here: fetching needs no toolchain.
+            found=yes
+        fi
+        ;;
+    *)
+        found=$({ nm -g "$out/$name" 2>/dev/null || true; } | awk '/ T _?spCreateSession$/ { f = 1 } END { if (f) print "yes" }')
+        ;;
+esac
 [[ "$found" == yes ]] || echo "fetch-static: WARNING — could not confirm the archive defines spCreateSession." >&2
 
 # Nothing writes shared libraries here any more — the SDK-staging script that
