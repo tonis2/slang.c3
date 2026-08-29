@@ -46,16 +46,25 @@
     },
     // -lstdc++ rather than -lc++: build-slang.sh lets CMake pick the host C++
     // compiler, and on the distributions this gets built on that is gcc.
+    //
+    // **In `linked-libraries` after slang, not in `link-args` — for its
+    // POSITION, the same reason windows-x64 names msvcrt below.** c3c emits a
+    // library's link-args ahead of its linked-libraries, so `-lstdc++` there
+    // lands *before* `-lslang`; GNU ld resolves left to right in one pass, takes
+    // nothing out of libstdc++ because nothing needs it yet, and then ends in
+    // thousands of undefined `operator new`, `__dynamic_cast` and
+    // `__cxxabiv1::__si_class_type_info` references out of libslang.a. macOS
+    // does not care — ld64 rescans archives — which is why macos-aarch64 can
+    // keep -lc++ in link-args and this is a Linux-only trap.
+    //
     // `-static-libstdc++` is worth considering instead for a binary meant to
     // run on older systems than the one that built it — otherwise the
     // executable picks up a version dependency on the build machine's libstdc++.
     "linux-x64": {
-      "linked-libraries": ["slang"],
-      "link-args": ["-lstdc++"]
+      "linked-libraries": ["slang", "stdc++"]
     },
     "linux-aarch64": {
-      "linked-libraries": ["slang"],
-      "link-args": ["-lstdc++"]
+      "linked-libraries": ["slang", "stdc++"]
     },
     // **`msvcrt` is named here, and only for its POSITION in the link line.**
     // c3c passes `... ucrt.lib vcruntime.lib msvcrt.lib`, and both of the last
